@@ -49,6 +49,22 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: 🧹 Clear Old Downloads
+        run: |
+          echo "🧹 Clearing old downloads..."
+          if [ -d "./downloads" ]; then
+            rm -rf ./downloads
+            echo "✅ Old downloads removed"
+          else
+            echo "ℹ️ No downloads directory to clear"
+          fi
+          
+          # Remove old Links.md if it exists
+          if [ -f "Links.md" ]; then
+            rm Links.md
+            echo "✅ Old Links.md removed"
+          fi
+
       - name: 🔧 Install Dependencies
         run: |
           sudo apt-get update
@@ -57,15 +73,10 @@ jobs:
       - name: 📋 Parse URLs
         id: parse_urls
         run: |
-          # Parse URLs from input (handle commas, spaces, and new lines)
           echo "${{ github.event.inputs.urls }}" | tr ',' '\n' | tr ' ' '\n' | grep -E 'https?://' | grep -v '^$' > /tmp/urls.txt
-          
-          # Remove duplicates while preserving order
           awk '!seen[$0]++' /tmp/urls.txt > /tmp/unique_urls.txt
-          
           TOTAL_URLS=$(wc -l < /tmp/unique_urls.txt)
           echo "total_urls=$TOTAL_URLS" >> $GITHUB_OUTPUT
-          
           echo "📊 Found $TOTAL_URLS unique URL(s):"
           cat -n /tmp/unique_urls.txt
 
@@ -75,9 +86,7 @@ jobs:
           python3 << 'PYEOF'
           import os, sys, json, time, re
           import requests
-          from pathlib import Path
           
-          # ========== CONFIGURATION ==========
           OUTPUT_TYPE = os.environ['OUTPUT_TYPE']
           QUALITY = os.environ.get('QUALITY', '720p')
           
@@ -85,11 +94,9 @@ jobs:
           STATUS_CHECK_INTERVAL = 2
           MAX_ATTEMPTS = 90
           
-          # ========== SUPPORTED QUALITIES ==========
           VIDEO_QUALITIES = ['144p', '360p', '480p', '720p', '1080p']
           AUDIO_BITRATES = ['64kbps', '128kbps', '192kbps', '320kbps']
           
-          # ========== READ URLS ==========
           with open('/tmp/unique_urls.txt', 'r') as f:
               urls = [line.strip() for line in f if line.strip()]
           
@@ -101,7 +108,6 @@ jobs:
           print(f"📦 Type: {OUTPUT_TYPE} | Quality: {QUALITY}")
           print(f"{'='*60}")
           
-          # ========== REQUEST HEADERS ==========
           HEADERS = {
               "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0",
               "Accept": "application/json",
@@ -110,7 +116,6 @@ jobs:
               "Origin": "https://media.ytmp3.gg",
           }
           
-          # ========== VALIDATE QUALITY ==========
           if OUTPUT_TYPE == 'video' and QUALITY not in VIDEO_QUALITIES:
               print(f"⚠️ Invalid video quality: {QUALITY}, using 720p")
               QUALITY = '720p'
@@ -118,7 +123,6 @@ jobs:
               print(f"⚠️ Invalid audio quality: {QUALITY}, using 192kbps")
               QUALITY = '192kbps'
           
-          # ========== PROCESS EACH URL ==========
           downloads = []
           failed_urls = []
           
@@ -128,29 +132,20 @@ jobs:
               print(f"{'='*60}")
               
               try:
-                  # Prepare payload
                   if OUTPUT_TYPE == 'audio':
                       payload = {
                           "url": url,
                           "os": "linux",
-                          "output": {
-                              "type": "audio",
-                              "format": "mp3"
-                          },
+                          "output": {"type": "audio", "format": "mp3"},
                           "audio": {"bitrate": QUALITY}
                       }
                   else:
                       payload = {
                           "url": url,
                           "os": "linux",
-                          "output": {
-                              "type": "video",
-                              "format": "mp4",
-                              "quality": QUALITY
-                          }
+                          "output": {"type": "video", "format": "mp4", "quality": QUALITY}
                       }
                   
-                  # Initiate conversion
                   print(f"📤 Requesting conversion...")
                   
                   session = requests.Session()
@@ -174,7 +169,6 @@ jobs:
                   
                   print(f"✅ Conversion registered: {title}")
                   
-                  # Poll for completion
                   download_url = None
                   for attempt in range(MAX_ATTEMPTS):
                       time.sleep(STATUS_CHECK_INTERVAL)
@@ -202,17 +196,15 @@ jobs:
                               break
                       elif status == 'failed':
                           print("❌ Conversion failed!")
-                          print(f"   Error: {status_data.get('error', 'Unknown error')}")
                           failed_urls.append((url, "Conversion failed"))
                           break
                   
                   if not download_url:
                       if (url, "Conversion failed") not in failed_urls:
-                          print("⏰ Timeout - conversion took too long")
+                          print("⏰ Timeout")
                           failed_urls.append((url, "Timeout"))
                       continue
                   
-                  # Generate filename
                   video_id_match = re.search(r'(?:v=|\/)([a-zA-Z0-9_-]{11})', url)
                   video_id = video_id_match.group(1) if video_id_match else "unknown"
                   
@@ -241,7 +233,6 @@ jobs:
                   print(f"❌ Unexpected error: {e}")
                   failed_urls.append((url, str(e)))
           
-          # ========== SAVE RESULTS ==========
           with open('/tmp/downloads.json', 'w') as f:
               json.dump(downloads, f)
           
@@ -257,8 +248,7 @@ jobs:
           if failed_urls:
               print(f"\n❌ Failed URLs:")
               for url, reason in failed_urls:
-                  print(f"   • {url[:80]}")
-                  print(f"     Reason: {reason}")
+                  print(f"   • {url[:80]} - {reason}")
           
           if not downloads:
               print("❌ No files to download!")
@@ -282,7 +272,12 @@ jobs:
               print("❌ No files to download!")
               sys.exit(1)
           
-          os.makedirs('./downloads/temp', exist_ok=True)
+          # Create downloads directory with absolute path
+          downloads_dir = os.path.join(os.getcwd(), 'downloads', 'temp')
+          os.makedirs(downloads_dir, exist_ok=True)
+          
+          print(f"📁 Download directory: {downloads_dir}")
+          print(f"📊 Files to download: {len(downloads)}")
           
           for idx, item in enumerate(downloads, 1):
               url = item['url']
@@ -290,43 +285,59 @@ jobs:
               
               print(f"\n{'='*60}")
               print(f"⬇️ [{idx}/{len(downloads)}] Downloading: {filename}")
+              print(f"📎 URL: {url[:100]}...")
               print(f"{'='*60}")
               
+              output_path = os.path.join(downloads_dir, filename)
+              
               cmd = [
-                  'curl', '--progress-bar', '-L',
+                  'curl', '-L',
+                  '--progress-bar',
                   '-H', 'User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0',
                   '-H', 'Referer: https://media.ytmp3.gg/',
-                  '-o', f'./downloads/temp/{filename}',
+                  '-o', output_path,
                   '--max-time', '300',
                   '--retry', '3',
                   '--retry-delay', '5',
+                  '--connect-timeout', '30',
                   url
               ]
               
-              result = subprocess.run(cmd, capture_output=True, text=True)
+              print(f"🔄 Running curl...")
+              result = subprocess.run(cmd, capture_output=False, text=True)
               
-              if os.path.exists(f'./downloads/temp/{filename}'):
-                  file_size = os.path.getsize(f'./downloads/temp/{filename}')
+              if os.path.exists(output_path):
+                  file_size = os.path.getsize(output_path)
                   size_mb = file_size / (1024 * 1024)
                   
                   if file_size > 0:
                       print(f"✅ Downloaded: {filename} ({size_mb:.1f} MB)")
                   else:
                       print(f"⚠️ File is empty: {filename}")
-                      os.remove(f'./downloads/temp/{filename}')
+                      os.remove(output_path)
               else:
                   print(f"❌ Download failed: {filename}")
+                  print(f"   File should be at: {output_path}")
           
-          # Count successful downloads
-          total_files = len([f for f in os.listdir('./downloads/temp') if os.path.isfile(os.path.join('./downloads/temp', f))])
-          
-          if total_files == 0:
-              print("\n❌ No files were downloaded successfully!")
+          # Verify downloads
+          if os.path.exists(downloads_dir):
+              files = [f for f in os.listdir(downloads_dir) if os.path.isfile(os.path.join(downloads_dir, f))]
+              total_files = len(files)
+              
+              if total_files == 0:
+                  print("\n❌ No files were downloaded successfully!")
+                  sys.exit(1)
+              
+              print(f"\n{'='*60}")
+              print(f"✅ Successfully downloaded {total_files} file(s):")
+              for f in files:
+                  fpath = os.path.join(downloads_dir, f)
+                  size = os.path.getsize(fpath) / (1024 * 1024)
+                  print(f"  • {f} ({size:.1f} MB)")
+              print(f"{'='*60}")
+          else:
+              print(f"❌ Downloads directory doesn't exist!")
               sys.exit(1)
-          
-          print(f"\n{'='*60}")
-          print(f"✅ Successfully downloaded {total_files} file(s)")
-          print(f"{'='*60}")
           PYEOF
 
       - name: ✂️ Smart Split Large Files
@@ -341,9 +352,25 @@ jobs:
           temp_dir = './downloads/temp'
           output_dir = './downloads'
           
+          print(f"🔍 Looking for files in: {os.path.abspath(temp_dir)}")
+          
           if not os.path.exists(temp_dir):
-              print("ℹ️ No temporary files to process")
-              exit(0)
+              print(f"❌ Temp directory doesn't exist: {temp_dir}")
+              # Check if files are directly in downloads
+              if os.path.exists(output_dir):
+                  files = [f for f in os.listdir(output_dir) if os.path.isfile(os.path.join(output_dir, f))]
+                  if files:
+                      print(f"📁 Found {len(files)} files directly in downloads")
+                      # Move them to temp for processing
+                      os.makedirs(temp_dir, exist_ok=True)
+                      for f in files:
+                          shutil.move(os.path.join(output_dir, f), os.path.join(temp_dir, f))
+                  else:
+                      print("ℹ️ No files to process")
+                      exit(0)
+              else:
+                  print("ℹ️ No files to process")
+                  exit(0)
           
           files = [f for f in os.listdir(temp_dir) if os.path.isfile(os.path.join(temp_dir, f))]
           
@@ -354,7 +381,6 @@ jobs:
           print(f"📁 Processing {len(files)} file(s)...")
           print(f"📏 Split threshold: {THRESHOLD_MB} MB")
           
-          # Track file structure for Links.md
           file_structure = []
           
           for filename in files:
@@ -373,11 +399,9 @@ jobs:
                   print(f"✂️ Splitting: {filename} ({size_mb:.1f} MB)")
                   print(f"   Part size: {THRESHOLD_MB} MB each")
                   
-                  # Move file to output directory first
                   dest_path = os.path.join(output_dir, filename)
                   shutil.move(filepath, dest_path)
                   
-                  # Create split zip from the output directory
                   original_cwd = os.getcwd()
                   os.chdir(output_dir)
                   
@@ -387,10 +411,8 @@ jobs:
                       
                       result = subprocess.run(cmd, check=True, capture_output=True, text=True)
                       
-                      # Remove the original file after successful split
                       os.remove(filename)
                       
-                      # Count and display parts
                       parts = sorted(glob.glob(f'{filename}.z*'))
                       print(f"✅ Created {len(parts)} part(s):")
                       for part in parts:
@@ -418,7 +440,6 @@ jobs:
                   else:
                       print(f"📁 {filename} ({size_mb:.1f} MB) — under threshold")
                   
-                  # Move to downloads folder
                   dest_path = os.path.join(output_dir, filename)
                   shutil.move(filepath, dest_path)
                   file_info['parts'].append({
@@ -428,15 +449,12 @@ jobs:
               
               file_structure.append(file_info)
           
-          # Clean up temp directory
           if os.path.exists(temp_dir) and not os.listdir(temp_dir):
               shutil.rmtree(temp_dir)
           
-          # Save file structure for Links.md generation
           with open('/tmp/file_structure.json', 'w') as f:
               json.dump(file_structure, f)
           
-          # List final files
           print(f"\n{'='*60}")
           print(f"📂 Final files in {output_dir}:")
           final_files = [f for f in os.listdir(output_dir) 
@@ -458,105 +476,76 @@ jobs:
           from datetime import datetime
           from urllib.parse import quote
           
-          # Get repository info
           repo = os.environ['GITHUB_REPOSITORY']
           branch = os.environ['GITHUB_REF_NAME']
           
-          # Raw GitHub URL base
           raw_base = f"https://raw.githubusercontent.com/{repo}/{branch}/downloads"
           
-          # Load file structure
           with open('/tmp/file_structure.json', 'r') as f:
               file_structure = json.load(f)
           
-          # Load downloads metadata
           with open('/tmp/downloads.json', 'r') as f:
               downloads_meta = json.load(f)
           
-          # Create a mapping of filename to metadata
           meta_map = {item['filename']: item for item in downloads_meta}
           
-          # Read existing Links.md if it exists
-          existing_content = ""
-          if os.path.exists('Links.md'):
-              with open('Links.md', 'r', encoding='utf-8') as f:
-                  existing_content = f.read()
-          
-          # Generate new content
           today_date = datetime.now().strftime('%Y-%m-%d')
           current_time = datetime.now().strftime('%H:%M:%S')
           
+          # Generate fresh Links.md (no existing content since we cleared it)
           new_entries = []
+          new_entries.append(f"# 📥 YouTube Downloads\n")
           new_entries.append(f"## 📅 {today_date} {current_time}\n")
           
           for file_info in file_structure:
               filename = file_info['filename']
-              base_name = filename.rsplit('.', 1)[0]  # Remove extension
+              base_name = filename.rsplit('.', 1)[0]
               
-              # Get metadata
               meta = meta_map.get(filename, {})
               title = meta.get('title', base_name)
               youtube_url = meta.get('youtube_url', '')
               quality = meta.get('quality', '')
+              file_type = meta.get('type', '')
               
-              # File header
               new_entries.append(f"### 🎬 {title}")
               if youtube_url:
                   new_entries.append(f"- **Source**: [{youtube_url}]({youtube_url})")
+              new_entries.append(f"- **Type**: {file_type.capitalize()}")
               new_entries.append(f"- **Quality**: {quality}")
-              new_entries.append(f"- **Size**: {file_info['size_mb']} MB")
+              new_entries.append(f"- **Total Size**: {file_info['size_mb']} MB")
               new_entries.append("")
               
-              # Parts with raw download links
               if len(file_info['parts']) > 1:
-                  new_entries.append("**Parts:**")
-                  for part in file_info['parts']:
+                  new_entries.append("**📦 Parts (Split Archive):**")
+                  for i, part in enumerate(file_info['parts'], 1):
                       part_name = part['name']
                       part_size = part['size_mb']
                       encoded_name = quote(part_name)
                       download_url = f"{raw_base}/{encoded_name}"
-                      new_entries.append(f"- [{part_name}]({download_url}) ({part_size} MB)")
+                      new_entries.append(f"{i}. [📥 {part_name}]({download_url}) ({part_size} MB)")
+                  new_entries.append("")
+                  new_entries.append("> 💡 **How to extract:** Download all parts and use [7-Zip](https://www.7-zip.org/) or `zip -s- {filename}.zip -O {filename}` to combine")
               else:
                   part = file_info['parts'][0]
                   part_name = part['name']
                   encoded_name = quote(part_name)
                   download_url = f"{raw_base}/{encoded_name}"
-                  new_entries.append(f"📥 [Download {part_name}]({download_url})")
+                  new_entries.append(f"📥 [**Download {part_name}**]({download_url})")
               
               new_entries.append("")
+              new_entries.append("---")
+              new_entries.append("")
           
-          new_content = "\n".join(new_entries)
+          full_content = "\n".join(new_entries)
           
-          # Combine existing and new content (new on top)
-          if existing_content.strip():
-              # Check if there's already content for today
-              if f"## 📅 {today_date}" in existing_content:
-                  # Replace today's section
-                  parts = existing_content.split(f"## 📅 {today_date}")
-                  if len(parts) > 1:
-                      # Find the next date section
-                      remaining = parts[1]
-                      next_section = remaining.split("\n## ", 1)
-                      if len(next_section) > 1:
-                          after_today = "\n## " + next_section[1]
-                      else:
-                          after_today = ""
-                      full_content = f"# 📥 YouTube Downloads\n\n{new_content}{after_today}"
-                  else:
-                      full_content = f"# 📥 YouTube Downloads\n\n{new_content}"
-              else:
-                  # Add new content on top
-                  full_content = f"# 📥 YouTube Downloads\n\n{new_content}\n{existing_content.replace('# 📥 YouTube Downloads\n\n', '')}"
-          else:
-              full_content = f"# 📥 YouTube Downloads\n\n{new_content}"
-          
-          # Write Links.md
           with open('Links.md', 'w', encoding='utf-8') as f:
               f.write(full_content)
           
           print("✅ Links.md generated successfully!")
-          print(f"📄 Preview:")
-          print(new_content[:500])
+          print(f"\n{'='*60}")
+          print(f"📄 Links.md Preview:")
+          print(f"{'='*60}")
+          print(full_content[:1000])
           PYEOF
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -569,7 +558,18 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Stage downloads and Links.md
+          # Pull latest changes first to avoid conflicts
+          echo "🔄 Pulling latest changes from remote..."
+          git pull --rebase origin "$BRANCH" || {
+            echo "⚠️ Rebase failed, trying merge..."
+            git pull origin "$BRANCH" --no-rebase
+          }
+          
+          # Show what we have
+          echo "📂 Files in downloads:"
+          find ./downloads -type f -exec ls -lh {} \; 2>/dev/null || echo "No downloads directory"
+          
+          # Stage all files
           git add ./downloads/ Links.md
           
           if git diff --staged --quiet; then
@@ -582,14 +582,23 @@ jobs:
           TOTAL_FILES=${#STAGED_FILES[@]}
           
           echo "📦 Found $TOTAL_FILES file(s) to upload"
+          echo "Files:"
+          printf '  • %s\n' "${STAGED_FILES[@]}"
           
-          # Unstage everything first for batch processing
+          # Reset staging
           git reset HEAD ./downloads/ Links.md
           
-          # First commit Links.md separately
+          # First commit and push Links.md
           if [[ " ${STAGED_FILES[@]} " =~ " Links.md " ]]; then
+            echo "📝 Committing Links.md..."
             git add Links.md
             git commit -m "docs: update download links [skip ci]"
+            git push origin "HEAD:$BRANCH" || {
+              echo "⚠️ Push failed, pulling and retrying..."
+              git pull --rebase origin "$BRANCH" || git pull origin "$BRANCH" --no-rebase
+              git push origin "HEAD:$BRANCH"
+            }
+            echo "✅ Links.md pushed successfully"
           fi
           
           # Then commit download files in batches
@@ -603,26 +612,31 @@ jobs:
           
           TOTAL_DOWNLOADS=${#DOWNLOAD_FILES[@]}
           
-          for (( i=0; i<TOTAL_DOWNLOADS; i+=BATCH_SIZE )); do
-            BATCH_NUM=$((i / BATCH_SIZE + 1))
-            END=$((i + BATCH_SIZE))
-            [[ $END -gt $TOTAL_DOWNLOADS ]] && END=$TOTAL_DOWNLOADS
-            
-            echo "🚀 Uploading batch $BATCH_NUM [$((i+1))–${END} of $TOTAL_DOWNLOADS]"
-            
-            # Add files in current batch
-            for (( j=i; j<END; j++ )); do
-              git add "${DOWNLOAD_FILES[$j]}"
+          if [ $TOTAL_DOWNLOADS -gt 0 ]; then
+            for (( i=0; i<TOTAL_DOWNLOADS; i+=BATCH_SIZE )); do
+              BATCH_NUM=$((i / BATCH_SIZE + 1))
+              END=$((i + BATCH_SIZE))
+              [[ $END -gt $TOTAL_DOWNLOADS ]] && END=$TOTAL_DOWNLOADS
+              
+              echo "🚀 Uploading batch $BATCH_NUM [$((i+1))–${END} of $TOTAL_DOWNLOADS]"
+              
+              # Add files for this batch
+              for (( j=i; j<END; j++ )); do
+                git add "${DOWNLOAD_FILES[$j]}"
+              done
+              
+              git commit -m "chore: add YouTube content batch $BATCH_NUM [skip ci]"
+              
+              # Pull and push with retry
+              git pull --rebase origin "$BRANCH" || git pull origin "$BRANCH" --no-rebase
+              git push origin "HEAD:$BRANCH" || {
+                echo "⚠️ Push failed for batch $BATCH_NUM, retrying..."
+                git pull --rebase origin "$BRANCH" || git pull origin "$BRANCH" --no-rebase
+                git push origin "HEAD:$BRANCH"
+              }
+              
+              echo "✅ Batch $BATCH_NUM uploaded"
             done
-            
-            git commit -m "chore: add YouTube content batch $BATCH_NUM [skip ci]"
-            git pull --rebase origin "$BRANCH" || true
-            git push origin "HEAD:$BRANCH"
-            
-            echo "✅ Batch $BATCH_NUM uploaded"
-          done
-          
-          # Push Links.md if not already pushed
-          git push origin "HEAD:$BRANCH"
+          fi
           
           echo "🎉 All files successfully uploaded to $BRANCH"
