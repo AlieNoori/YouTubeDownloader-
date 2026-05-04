@@ -227,9 +227,12 @@ jobs:
                   downloads.append({
                       'url': download_url,
                       'filename': filename,
-                      'title': safe_title,
+                      'title': title,
+                      'safe_title': safe_title,
+                      'video_id': video_id,
                       'type': OUTPUT_TYPE,
-                      'quality': QUALITY
+                      'quality': QUALITY,
+                      'youtube_url': url
                   })
                   
                   print(f"📄 Filename: {filename}")
@@ -327,9 +330,10 @@ jobs:
           PYEOF
 
       - name: ✂️ Smart Split Large Files
+        id: split_files
         run: |
           python3 << 'PYEOF'
-          import os, subprocess, glob, shutil
+          import os, subprocess, glob, shutil, json
           
           THRESHOLD_MB = int(os.environ.get('SPLIT_THRESHOLD_MB', '0'))
           THRESHOLD_BYTES = THRESHOLD_MB * 1024 * 1024
@@ -350,10 +354,19 @@ jobs:
           print(f"📁 Processing {len(files)} file(s)...")
           print(f"📏 Split threshold: {THRESHOLD_MB} MB")
           
+          # Track file structure for Links.md
+          file_structure = []
+          
           for filename in files:
               filepath = os.path.join(temp_dir, filename)
               size = os.path.getsize(filepath)
               size_mb = size / (1024 * 1024)
+              
+              file_info = {
+                  'filename': filename,
+                  'size_mb': round(size_mb, 1),
+                  'parts': []
+              }
               
               if THRESHOLD_BYTES > 0 and size > THRESHOLD_BYTES:
                   print(f"\n{'='*60}")
@@ -365,9 +378,6 @@ jobs:
                   shutil.move(filepath, dest_path)
                   
                   # Create split zip from the output directory
-                  zip_base = os.path.join(output_dir, f"{filename}.zip")
-                  
-                  # Change to output directory to run zip command
                   original_cwd = os.getcwd()
                   os.chdir(output_dir)
                   
@@ -386,13 +396,19 @@ jobs:
                       for part in parts:
                           part_size = os.path.getsize(part) / (1024 * 1024)
                           print(f"   • {part} ({part_size:.1f} MB)")
+                          file_info['parts'].append({
+                              'name': part,
+                              'size_mb': round(part_size, 1)
+                          })
                       
                   except subprocess.CalledProcessError as e:
                       print(f"❌ Split failed: {e}")
-                      print(f"   stdout: {e.stdout}")
                       print(f"   stderr: {e.stderr}")
-                      # Keep the original file if split fails
                       print(f"   ℹ️ Keeping original file: {filename}")
+                      file_info['parts'].append({
+                          'name': filename,
+                          'size_mb': round(size_mb, 1)
+                      })
                   finally:
                       os.chdir(original_cwd)
                   
@@ -403,11 +419,22 @@ jobs:
                       print(f"📁 {filename} ({size_mb:.1f} MB) — under threshold")
                   
                   # Move to downloads folder
-                  shutil.move(filepath, os.path.join(output_dir, filename))
+                  dest_path = os.path.join(output_dir, filename)
+                  shutil.move(filepath, dest_path)
+                  file_info['parts'].append({
+                      'name': filename,
+                      'size_mb': round(size_mb, 1)
+                  })
+              
+              file_structure.append(file_info)
           
           # Clean up temp directory
           if os.path.exists(temp_dir) and not os.listdir(temp_dir):
               shutil.rmtree(temp_dir)
+          
+          # Save file structure for Links.md generation
+          with open('/tmp/file_structure.json', 'w') as f:
+              json.dump(file_structure, f)
           
           # List final files
           print(f"\n{'='*60}")
@@ -423,6 +450,118 @@ jobs:
           PYEOF
         env:
           SPLIT_THRESHOLD_MB: ${{ github.event.inputs.split_threshold_mb }}
+
+      - name: 📝 Generate Links.md
+        run: |
+          python3 << 'PYEOF'
+          import json, os
+          from datetime import datetime
+          from urllib.parse import quote
+          
+          # Get repository info
+          repo = os.environ['GITHUB_REPOSITORY']
+          branch = os.environ['GITHUB_REF_NAME']
+          
+          # Raw GitHub URL base
+          raw_base = f"https://raw.githubusercontent.com/{repo}/{branch}/downloads"
+          
+          # Load file structure
+          with open('/tmp/file_structure.json', 'r') as f:
+              file_structure = json.load(f)
+          
+          # Load downloads metadata
+          with open('/tmp/downloads.json', 'r') as f:
+              downloads_meta = json.load(f)
+          
+          # Create a mapping of filename to metadata
+          meta_map = {item['filename']: item for item in downloads_meta}
+          
+          # Read existing Links.md if it exists
+          existing_content = ""
+          if os.path.exists('Links.md'):
+              with open('Links.md', 'r', encoding='utf-8') as f:
+                  existing_content = f.read()
+          
+          # Generate new content
+          today_date = datetime.now().strftime('%Y-%m-%d')
+          current_time = datetime.now().strftime('%H:%M:%S')
+          
+          new_entries = []
+          new_entries.append(f"## 📅 {today_date} {current_time}\n")
+          
+          for file_info in file_structure:
+              filename = file_info['filename']
+              base_name = filename.rsplit('.', 1)[0]  # Remove extension
+              
+              # Get metadata
+              meta = meta_map.get(filename, {})
+              title = meta.get('title', base_name)
+              youtube_url = meta.get('youtube_url', '')
+              quality = meta.get('quality', '')
+              
+              # File header
+              new_entries.append(f"### 🎬 {title}")
+              if youtube_url:
+                  new_entries.append(f"- **Source**: [{youtube_url}]({youtube_url})")
+              new_entries.append(f"- **Quality**: {quality}")
+              new_entries.append(f"- **Size**: {file_info['size_mb']} MB")
+              new_entries.append("")
+              
+              # Parts with raw download links
+              if len(file_info['parts']) > 1:
+                  new_entries.append("**Parts:**")
+                  for part in file_info['parts']:
+                      part_name = part['name']
+                      part_size = part['size_mb']
+                      encoded_name = quote(part_name)
+                      download_url = f"{raw_base}/{encoded_name}"
+                      new_entries.append(f"- [{part_name}]({download_url}) ({part_size} MB)")
+              else:
+                  part = file_info['parts'][0]
+                  part_name = part['name']
+                  encoded_name = quote(part_name)
+                  download_url = f"{raw_base}/{encoded_name}"
+                  new_entries.append(f"📥 [Download {part_name}]({download_url})")
+              
+              new_entries.append("")
+          
+          new_content = "\n".join(new_entries)
+          
+          # Combine existing and new content (new on top)
+          if existing_content.strip():
+              # Check if there's already content for today
+              if f"## 📅 {today_date}" in existing_content:
+                  # Replace today's section
+                  parts = existing_content.split(f"## 📅 {today_date}")
+                  if len(parts) > 1:
+                      # Find the next date section
+                      remaining = parts[1]
+                      next_section = remaining.split("\n## ", 1)
+                      if len(next_section) > 1:
+                          after_today = "\n## " + next_section[1]
+                      else:
+                          after_today = ""
+                      full_content = f"# 📥 YouTube Downloads\n\n{new_content}{after_today}"
+                  else:
+                      full_content = f"# 📥 YouTube Downloads\n\n{new_content}"
+              else:
+                  # Add new content on top
+                  full_content = f"# 📥 YouTube Downloads\n\n{new_content}\n{existing_content.replace('# 📥 YouTube Downloads\n\n', '')}"
+          else:
+              full_content = f"# 📥 YouTube Downloads\n\n{new_content}"
+          
+          # Write Links.md
+          with open('Links.md', 'w', encoding='utf-8') as f:
+              f.write(full_content)
+          
+          print("✅ Links.md generated successfully!")
+          print(f"📄 Preview:")
+          print(new_content[:500])
+          PYEOF
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+
       - name: 📤 Commit and Push to Repository
         run: |
           BRANCH="${GITHUB_REF_NAME}"
@@ -430,8 +569,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Stage all downloaded files
-          git add ./downloads/
+          # Stage downloads and Links.md
+          git add ./downloads/ Links.md
           
           if git diff --staged --quiet; then
             echo "ℹ️ No changes to commit"
@@ -445,19 +584,35 @@ jobs:
           echo "📦 Found $TOTAL_FILES file(s) to upload"
           
           # Unstage everything first for batch processing
-          git reset HEAD ./downloads/
+          git reset HEAD ./downloads/ Links.md
           
+          # First commit Links.md separately
+          if [[ " ${STAGED_FILES[@]} " =~ " Links.md " ]]; then
+            git add Links.md
+            git commit -m "docs: update download links [skip ci]"
+          fi
+          
+          # Then commit download files in batches
           BATCH_SIZE=5
-          for (( i=0; i<TOTAL_FILES; i+=BATCH_SIZE )); do
+          DOWNLOAD_FILES=()
+          for file in "${STAGED_FILES[@]}"; do
+            if [[ "$file" == ./downloads/* ]]; then
+              DOWNLOAD_FILES+=("$file")
+            fi
+          done
+          
+          TOTAL_DOWNLOADS=${#DOWNLOAD_FILES[@]}
+          
+          for (( i=0; i<TOTAL_DOWNLOADS; i+=BATCH_SIZE )); do
             BATCH_NUM=$((i / BATCH_SIZE + 1))
             END=$((i + BATCH_SIZE))
-            [[ $END -gt $TOTAL_FILES ]] && END=$TOTAL_FILES
+            [[ $END -gt $TOTAL_DOWNLOADS ]] && END=$TOTAL_DOWNLOADS
             
-            echo "🚀 Uploading batch $BATCH_NUM [$((i+1))–${END} of $TOTAL_FILES]"
+            echo "🚀 Uploading batch $BATCH_NUM [$((i+1))–${END} of $TOTAL_DOWNLOADS]"
             
             # Add files in current batch
             for (( j=i; j<END; j++ )); do
-              git add "${STAGED_FILES[$j]}"
+              git add "${DOWNLOAD_FILES[$j]}"
             done
             
             git commit -m "chore: add YouTube content batch $BATCH_NUM [skip ci]"
@@ -466,5 +621,8 @@ jobs:
             
             echo "✅ Batch $BATCH_NUM uploaded"
           done
+          
+          # Push Links.md if not already pushed
+          git push origin "HEAD:$BRANCH"
           
           echo "🎉 All files successfully uploaded to $BRANCH"
